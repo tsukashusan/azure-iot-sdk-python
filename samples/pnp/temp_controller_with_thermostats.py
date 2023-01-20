@@ -7,6 +7,7 @@ import os
 import asyncio
 import random
 import logging
+from datetime import date, datetime
 
 from azure.iot.device.aio import IoTHubDeviceClient
 from azure.iot.device.aio import ProvisioningDeviceClient
@@ -147,12 +148,15 @@ def create_max_min_report_response(thermostat_name):
 # TELEMETRY TASKS
 
 
-async def send_telemetry_from_temp_controller(device_client, telemetry_msg, component_name=None):
+async def send_telemetry_from_temp_controller(device_client, telemetry_msg, component_name=None, sleeptime: float = 5):
     msg = pnp_helper.create_telemetry(telemetry_msg, component_name)
     await device_client.send_message(msg)
     print("Sent message")
     print(msg)
-    await asyncio.sleep(5)
+    if sleeptime:
+        await asyncio.sleep(sleeptime)
+    else:
+        await asyncio.sleep(sleeptime)
 
 
 #####################################################
@@ -372,22 +376,22 @@ async def main():
             curr_temp_ext = random.randrange(10, 50)
             THERMOSTAT_1.record(curr_temp_ext)
 
-            temperature_msg1 = {"temperature": curr_temp_ext}
+            temperature_msg1 = {"temperature": curr_temp_ext, "send_datetime": datetime.now().isoformat()}
             await send_telemetry_from_temp_controller(
-                device_client, temperature_msg1, thermostat_1_component_name
+                device_client, temperature_msg1, thermostat_1_component_name, sleeptime=0.1
             )
 
             curr_temp_int = random.randrange(10, 50)  # Current temperature in Celsius
             THERMOSTAT_2.record(curr_temp_int)
 
-            temperature_msg2 = {"temperature": curr_temp_int}
+            temperature_msg2 = {"temperature": curr_temp_int, "send_datetime": datetime.now().isoformat()}
 
             await send_telemetry_from_temp_controller(
-                device_client, temperature_msg2, thermostat_2_component_name
+                device_client, temperature_msg2, thermostat_2_component_name, sleeptime=0.1
             )
 
-            workingset_msg3 = {"workingSet": random.randrange(1, 100)}
-            await send_telemetry_from_temp_controller(device_client, workingset_msg3)
+            workingset_msg3 = {"workingSet": random.randrange(1, 100), "send_datetime": datetime.now().isoformat()}
+            await send_telemetry_from_temp_controller(device_client, workingset_msg3, sleeptime=0.1)
 
     send_telemetry_task = asyncio.ensure_future(send_telemetry())
 
