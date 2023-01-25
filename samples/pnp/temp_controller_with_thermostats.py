@@ -6,8 +6,8 @@
 import os
 import asyncio
 import random
+import math
 import logging
-from datetime import date, datetime
 
 from azure.iot.device.aio import IoTHubDeviceClient
 from azure.iot.device.aio import ProvisioningDeviceClient
@@ -44,6 +44,10 @@ serial_number = "some_serial_number"
 THERMOSTAT_1 = None
 THERMOSTAT_2 = None
 
+JSON_DATA = []
+BLOB_INFO = None
+STORE_BLOB = True
+SLEEP_TIME = 1
 
 class Thermostat(object):
     def __init__(self, name, moving_win=10):
@@ -148,8 +152,10 @@ def create_max_min_report_response(thermostat_name):
 # TELEMETRY TASKS
 
 
-async def send_telemetry_from_temp_controller(device_client, telemetry_msg, component_name=None, sleeptime: float = 5):
-    msg = pnp_helper.create_telemetry(telemetry_msg, component_name)
+async def send_telemetry_from_temp_controller(device_client, telemetry_msg, component_name=None, sleeptime: float = 5, store_blob: bool = False):
+    global JSON_DATA
+    global BLOB_INFO
+    msg = await pnp_helper.create_telemetry(device_client=device_client, telemetry_msg=telemetry_msg, component_name=component_name, store_blob=store_blob, json_list=JSON_DATA, file_path_prefix="telemetry_%s.json", chunk_size=10)
     await device_client.send_message(msg)
     print("Sent message")
     print(msg)
@@ -213,7 +219,7 @@ async def execute_command_listener(
         try:
             await device_client.send_method_response(command_response)
         except Exception:
-            print("responding to the {command} command failed".format(command=method_name))
+            logging.error("responding to the {command} command failed".format(command=method_name))
 
 
 #####################################################
@@ -366,32 +372,47 @@ async def main():
         execute_property_listener(device_client),
     )
 
+    def create_error_data(data : float, reference : int = 13) -> float:
+            if math.floor(data) % reference == 0:
+                return random.uniform(90, 100)
+            else:
+                return data
+
     ################################################
     # Function to send telemetry every 8 seconds
 
     async def send_telemetry():
+        global STORE_BLOB
+        global SLEEP_TIME
         print("Sending telemetry from various components")
 
         while True:
-            curr_temp_ext = random.randrange(10, 50)
+            if device_client.connected == False:
+                await device_client.connect()
+            curr_temp_ext = create_error_data(data=random.uniform(10, 50))
+            curr_humidity_ext = create_error_data(random.uniform(50, 70))
             THERMOSTAT_1.record(curr_temp_ext)
 
-            temperature_msg1 = {"temperature": curr_temp_ext, "send_datetime": datetime.now().isoformat()}
+            
+            temperature_msg1 = {"temperature": curr_temp_ext, "humidity" : curr_humidity_ext, "send_datetime": datetime.now().isoformat()}
             await send_telemetry_from_temp_controller(
-                device_client, temperature_msg1, thermostat_1_component_name, sleeptime=0.1
+                device_client, temperature_msg1, thermostat_1_component_name, sleeptime=SLEEP_TIME, store_blob=STORE_BLOB
             )
 
-            curr_temp_int = random.randrange(10, 50)  # Current temperature in Celsius
+            curr_temp_int = create_error_data(random.uniform(10, 50))  # Current temperature in Celsius
+            curr_humidity_int = create_error_data(random.uniform(50, 70))
             THERMOSTAT_2.record(curr_temp_int)
 
-            temperature_msg2 = {"temperature": curr_temp_int, "send_datetime": datetime.now().isoformat()}
+            temperature_msg2 = {"temperature": curr_temp_int, "humidity" : curr_humidity_int, "send_datetime": datetime.now().isoformat()}
 
             await send_telemetry_from_temp_controller(
-                device_client, temperature_msg2, thermostat_2_component_name, sleeptime=0.1
+                device_client, temperature_msg2, thermostat_2_component_name, sleeptime=SLEEP_TIME, store_blob=STORE_BLOB
             )
 
             workingset_msg3 = {"workingSet": random.randrange(1, 100), "send_datetime": datetime.now().isoformat()}
-            await send_telemetry_from_temp_controller(device_client, workingset_msg3, sleeptime=0.1)
+            await send_telemetry_from_temp_controller(device_client, workingset_msg3, sleeptime=SLEEP_TIME, store_blob=STORE_BLOB)
+            await device_client.disconnect()
+
 
     send_telemetry_task = asyncio.ensure_future(send_telemetry())
 

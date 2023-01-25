@@ -9,7 +9,12 @@ These methods formats the telemetry, methods, properties to plug and play releva
 command requests and pnp properties.
 """
 from azure.iot.device import Message
+from azure.core.exceptions import AzureError
+from azure.storage.blob import BlobClient
 import json
+import os
+import datetime
+import logging
 
 
 class PnpProperties(object):
@@ -29,7 +34,7 @@ class PnpProperties(object):
         return inner
 
 
-def create_telemetry(telemetry_msg, component_name=None):
+async def create_telemetry(telemetry_msg, component_name=None, device_client: any = None, store_blob: bool = False, json_list: list = None, file_path_prefix: str = None, chunk_size: int = 0):
     """
     Function to create telemetry for a plug and play device. This function will take the raw telemetry message
     in the form of a dictionary from the user and then create a plug and play specific message.
@@ -38,6 +43,9 @@ def create_telemetry(telemetry_msg, component_name=None):
     :return: The message.
     """
     msg = Message(json.dumps(telemetry_msg))
+    if store_blob and json_list is not None:
+        await store_json(device_client=device_client, json=msg.data, json_list=json_list, file_path_prefix=file_path_prefix, chunk_size=chunk_size)
+    
     msg.content_encoding = "utf-8"
     msg.content_type = "application/json"
     if component_name:
@@ -113,15 +121,18 @@ def create_reported_properties_from_desired(patch):
     version = patch["$version"]
     inner_dict = {}
 
-    for prop_name, prop_value in values.items():
-        if prop_name in ignore_keys:
-            continue
-        else:
-            inner_dict["ac"] = 200
-            inner_dict["ad"] = "Successfully executed patch"
-            inner_dict["av"] = version
-            inner_dict["value"] = prop_value
-            values[prop_name] = inner_dict
+    if hasattr(values, 'items'):
+        for prop_name, prop_value in values.items():
+            if prop_name in ignore_keys:
+                continue
+            else:
+                inner_dict["ac"] = 200
+                inner_dict["ad"] = "Successfully executed patch"
+                inner_dict["av"] = version
+                inner_dict["value"] = prop_value
+                values[prop_name] = inner_dict
+    else:
+        print("values not have attributes items. values=%s" % values)
 
     properties_dict = dict()
     if component_prefix:
@@ -130,3 +141,83 @@ def create_reported_properties_from_desired(patch):
         properties_dict = values
 
     return properties_dict
+
+async def store_blob(device_client: any, file_name: str):
+    try:
+    # Get the storage info for the blob
+        blob_name = os.path.basename(file_name)
+        blob_info = await device_client.get_storage_info_for_blob(blob_name)
+        sas_url = "https://{}/{}/{}{}".format(
+            blob_info["hostName"],
+            blob_info["containerName"],
+            blob_info["blobName"],
+            blob_info["sasToken"]
+        )
+
+        print("\nUploading file: {} to Azure Storage as blob: {} in container {}\n".format(file_name, blob_info["blobName"], blob_info["containerName"]))
+
+        # Upload the specified file
+        with BlobClient.from_blob_url(sas_url) as blob_client:
+            with open(file_name, "rb") as f:
+                result = blob_client.upload_blob(f, overwrite=True)
+                return (True, result, blob_info)
+
+    except FileNotFoundError as ex:
+        # catch file not found and add an HTTP status code to return in notification to IoT Hub
+        ex.status_code = 404
+        return (False, ex, blob_info)
+
+    except AzureError as ex:
+        # catch Azure errors that might result from the upload operation
+        logging.error(ex)
+        return (False, ex, blob_info)
+    except Exception as ex:
+        logging.error(ex)
+        return (False, ex, blob_info)
+
+async def store_json(device_client: any, json: str, json_list: list, file_path_prefix: str, chunk_size: int):
+    if len(json_list) < chunk_size:
+        json_list.append(json)
+    else:
+        try:
+            json_list.append(json)
+            file_path = file_path_prefix % datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+    
+            with open(file_path, mode='a') as f:
+                count = 0
+                for line in json_list:
+                    if count < len(json_list) -1:
+                        f.write("%s\n" % line)
+                    else:
+                        f.write("%s" % line)
+                    count = count + 1
+    
+            success, result, storage_info  = await store_blob(device_client=device_client, file_name=file_path)
+            if success == True:
+                json_list.clear()
+                os.remove(file_path)
+                print("Upload succeeded. Result is: \n") 
+                print(result)
+
+                await device_client.notify_blob_upload_status(
+                    storage_info["correlationId"], True, 200, "OK: {}".format(file_path)
+                )
+                return
+
+            else :
+                # If the upload was not successful, the result is the exception object
+                json_list.clear()
+                os.remove(file_path)
+                logging.error("Upload failed. Exception is: \n") 
+                logging.error(result)
+                await device_client.notify_blob_upload_status(
+                    storage_info["correlationId"], False, result.status_code, str(result)
+                )
+                return
+        except Exception as ex:
+            json_list.clear()
+            os.remove(file_path)
+            logging.error("\nException:")
+            logging.error(ex)
+            raise ex
+

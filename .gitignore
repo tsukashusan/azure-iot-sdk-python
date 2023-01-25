@@ -125,3 +125,5 @@ demoCA/
 
 # e2e
 **/_e2e_settings.json
+
+telemetry_*.json
